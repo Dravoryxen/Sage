@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 const paper = Color(0xFFEFEAE0), surf = Color(0xFFF8F5EE), ink = Color(0xFF1B1A17);
 const mu = Color(0xFF5E5A50), ln = Color(0xFFD3CCBD), sg = Color(0xFF2E3B30);
@@ -110,6 +111,12 @@ Future<String?> askText(BuildContext c, String title, String hint, {bool pin = f
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await Supabase.initialize(
+    url: 'https://spanohfpgiycnoxdanmi.supabase.co',
+    anonKey: 'sb_publishable_laNdQW_E3tk4UV1Qo7l_pw_I525BYfP',
+  );
+
   await Api.init();
   runApp(const SageApp());
 }
@@ -137,13 +144,15 @@ class SageApp extends StatelessWidget {
 
 class Boot extends StatelessWidget {
   const Boot({super.key});
+
   @override
-  Widget build(BuildContext c) => FutureBuilder<R>(
-      future: Api.call('me'),
-      builder: (c, s) {
-        if (!s.hasData) return const Scaffold(body: Center(child: Mark(80)));
-        return s.data!.ok ? Home(s.data!.j) : const AuthPage();
-      });
+  Widget build(BuildContext c) {
+    final session = Supabase.instance.client.auth.currentSession;
+
+    return session == null
+        ? const AuthPage()
+        : const SageAccountPage();
+  }
 }
 
 class Mark extends StatelessWidget {
@@ -188,59 +197,231 @@ class Av extends StatelessWidget {
 
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
+
   @override
   State<AuthPage> createState() => _AuthS();
 }
 
 class _AuthS extends State<AuthPage> {
-  final nm = TextEditingController(), pw = TextEditingController();
-  final sv = TextEditingController(text: Api.base);
-  String? err;
-  bool busy = false;
+  final email = TextEditingController();
+  final username = TextEditingController();
+  final password = TextEditingController();
 
-  Future<void> go(String mode) async {
-    setState(() => busy = true);
-    await Api.setBase(sv.text);
-    final r = await Api.call('auth', {'mode': mode, 'name': nm.text.trim(), 'pw': pw.text});
-    if (r.ok) {
-      final m = await Api.call('me');
-      if (m.ok && mounted) {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => Home(m.j)));
-        return;
-      }
+  bool busy = false;
+  bool isRegister = false;
+  String? err;
+
+  Future<void> go() async {
+    final e = email.text.trim().toLowerCase();
+    final u = username.text.trim();
+    final p = password.text;
+
+    if (!e.contains('@') || !e.contains('.')) {
+      setState(() => err = 'Adresse e-mail invalide.');
+      return;
     }
-    if (mounted) {
-      setState(() {
-        busy = false;
-        err = r.ok ? 'Erreur de connexion.' : r.err;
-      });
+
+    if (isRegister && (u.length < 3 || u.length > 24)) {
+      setState(() => err = 'Le nom doit contenir entre 3 et 24 caractères.');
+      return;
+    }
+
+    if (p.length < 6) {
+      setState(() => err = 'Le mot de passe doit contenir au moins 6 caractères.');
+      return;
+    }
+
+    setState(() {
+      busy = true;
+      err = null;
+    });
+
+    try {
+      final auth = Supabase.instance.client.auth;
+
+      if (isRegister) {
+        final result = await auth.signUp(
+          email: e,
+          password: p,
+          data: {'username': u},
+        );
+
+        if (!mounted) return;
+
+        if (result.session == null) {
+          setState(() {
+            busy = false;
+            err = 'Compte créé. Vérifie ton e-mail pour confirmer ton inscription, puis connecte-toi.';
+          });
+          return;
+        }
+      } else {
+        await auth.signInWithPassword(email: e, password: p);
+      }
+
+      if (!mounted) return;
+
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const SageAccountPage()),
+      );
+    } on AuthException catch (e) {
+      if (mounted) {
+        setState(() {
+          busy = false;
+          err = e.message;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          busy = false;
+          err = 'Une erreur est survenue. Réessaie.';
+        });
+      }
     }
   }
 
   @override
+  void dispose() {
+    email.dispose();
+    username.dispose();
+    password.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext c) => Scaffold(
-          body: SafeArea(
-              child: Center(
-                  child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(children: [
-          const Mark(72),
-          Text('sage', style: serif(44, it: true, w: FontWeight.w600)),
-          const SizedBox(height: 24),
-          TextField(controller: nm, maxLength: 24, decoration: const InputDecoration(labelText: 'Nom d’utilisateur')),
-          const SizedBox(height: 8),
-          TextField(controller: pw, obscureText: true, decoration: const InputDecoration(labelText: 'Mot de passe (6 caractères min.)')),
-          const SizedBox(height: 8),
-          TextField(controller: sv, keyboardType: TextInputType.url, decoration: const InputDecoration(labelText: 'Serveur')),
-          if (err != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(err!, style: const TextStyle(fontWeight: FontWeight.w600))),
-          const SizedBox(height: 16),
-          Row(children: [
-            Expanded(child: FilledButton(onPressed: busy ? null : () => go('login'), child: const Text('Se connecter'))),
-            const SizedBox(width: 8),
-            Expanded(child: OutlinedButton(onPressed: busy ? null : () => go('register'), child: const Text('Créer un compte'))),
-          ]),
-        ]),
-      ))));
+    body: SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            children: [
+              const Mark(72),
+              Text('sage', style: serif(44, it: true, w: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Text(
+                isRegister ? 'Créer votre compte' : 'Bienvenue sur SAGE',
+                style: serif(22),
+              ),
+              const SizedBox(height: 24),
+              if (isRegister) ...[
+                TextField(
+                  controller: username,
+                  maxLength: 24,
+                  decoration: const InputDecoration(labelText: 'Nom d’utilisateur'),
+                ),
+                const SizedBox(height: 8),
+              ],
+              TextField(
+                controller: email,
+                keyboardType: TextInputType.emailAddress,
+                autocorrect: false,
+                decoration: const InputDecoration(labelText: 'Adresse e-mail'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: password,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Mot de passe (6 caractères min.)'),
+              ),
+              if (err != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(err!, style: const TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: busy ? null : go,
+                  child: Text(busy ? 'Patiente...' : isRegister ? 'Créer mon compte' : 'Se connecter'),
+                ),
+              ),
+              TextButton(
+                onPressed: busy
+                    ? null
+                    : () => setState(() {
+                          isRegister = !isRegister;
+                          err = null;
+                        }),
+                child: Text(
+                  isRegister
+                      ? 'J’ai déjà un compte : me connecter'
+                      : 'Nouveau sur SAGE ? Créer un compte',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class SageAccountPage extends StatelessWidget {
+  const SageAccountPage({super.key});
+
+  Future<void> logout(BuildContext context) async {
+    try {
+      await Supabase.instance.client.auth.signOut();
+      if (!context.mounted) return;
+
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const AuthPage()),
+        (_) => false,
+      );
+    } catch (_) {
+      if (context.mounted) {
+        snack(context, 'Déconnexion impossible. Réessaie.');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = Supabase.instance.client.auth.currentUser;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('sage', style: serif(28, it: true)),
+        actions: [
+          IconButton(
+            tooltip: 'Se déconnecter',
+            onPressed: () => logout(context),
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Mark(72),
+              const SizedBox(height: 20),
+              Text('Bienvenue sur SAGE', style: serif(26, it: true)),
+              const SizedBox(height: 12),
+              Text(user?.email ?? 'Compte connecté'),
+              const SizedBox(height: 20),
+              const Text(
+                'Ton compte SAGEBASE est connecté. '
+                'Les publications, les cercles et les messages seront activés '
+                'après leur migration vers la base de données.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              OutlinedButton(
+                onPressed: () => logout(context),
+                child: const Text('Se déconnecter'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class PostCard extends StatelessWidget {
@@ -647,7 +828,7 @@ class SpaceSheet extends StatefulWidget {
 class _SS extends State<SpaceSheet> {
   List members = [];
   String? err;
-  final cn = TextEditingController(), sv = TextEditingController(text: Api.base);
+  final cn = TextEditingController();
 
   @override
   void initState() {
@@ -691,19 +872,6 @@ class _SS extends State<SpaceSheet> {
           FilledButton(onPressed: () => setC(cn.text, true), child: const Text('Ajouter')),
         ]),
         if (err != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(err!, style: const TextStyle(fontWeight: FontWeight.w600))),
-        const SizedBox(height: 16),
-        const Text('SERVEUR', style: TextStyle(color: mu, fontWeight: FontWeight.w600, letterSpacing: 1, fontSize: 13)),
-        const SizedBox(height: 8),
-        Row(children: [
-          Expanded(child: TextField(controller: sv, keyboardType: TextInputType.url)),
-          const SizedBox(width: 8),
-          OutlinedButton(
-              onPressed: () async {
-                await Api.setBase(sv.text);
-                if (mounted) snack(c, 'Serveur enregistré.');
-              },
-              child: const Text('Enregistrer')),
-        ]),
         const SizedBox(height: 20),
         OutlinedButton(
             onPressed: () {
